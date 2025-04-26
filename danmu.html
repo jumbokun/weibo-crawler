@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: transparent;
+            overflow: hidden;
+            animation: keepAlive 10s infinite;
+        }
+
+        #danmu-container {
+            width: 600px;
+            height: auto;
+            overflow: hidden;
+            position: relative;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+
+        .danmu-item {
+            color: #FFFFFF;
+            font-size: 16px;
+            padding: 4px 0;
+            word-wrap: break-word;
+            word-break: break-all;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: slideIn 0.3s ease forwards;
+        }
+
+        .danmu-item.removing {
+            animation: slideOut 0.3s ease forwards;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            to {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+        }
+
+        .username {
+            color: #FFD700;
+            margin-right: 8px;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+            font-weight: bold;
+            display: inline-block;
+        }
+
+        .message {
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+            display: inline-block;
+        }
+
+        #connection-status {
+            position: absolute;
+            top: 0;
+            right: 0;
+            padding: 2px 5px;
+            font-size: 12px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            border-radius: 3px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 1000;
+        }
+
+        #connection-status.show {
+            opacity: 1;
+        }
+
+        #connection-status.connected {
+            background-color: rgba(0, 128, 0, 0.5);
+        }
+
+        #connection-status.disconnected {
+            background-color: rgba(255, 0, 0, 0.5);
+        }
+
+        /* 保持浏览器源活跃的动画 */
+        @keyframes keepAlive {
+            0% { opacity: 1; }
+            50% { opacity: 0.99999; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div id="danmu-container"></div>
+    <div id="connection-status">连接中...</div>
+    <script>
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 10;
+        const reconnectInterval = 3000;
+        let maxLines = 5;
+        
+        function debugLog(message) {
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        function updateConnectionStatus(status, isError = false) {
+            debugLog(`Connection status: ${status}`);
+            const statusElement = document.getElementById('connection-status');
+            statusElement.textContent = status;
+            statusElement.className = 'show ' + (isError ? 'disconnected' : 'connected');
+            
+            if (!isError) {
+                setTimeout(() => {
+                    statusElement.className = '';
+                }, 3000);
+            }
+        }
+        
+        function clearDanmu() {
+            const container = document.getElementById('danmu-container');
+            const items = Array.from(container.children);
+            items.forEach(item => {
+                item.classList.add('removing');
+                setTimeout(() => {
+                    if (item.parentNode === container) {
+                        container.removeChild(item);
+                    }
+                }, 300);
+            });
+        }
+
+        function addDanmu(data) {
+            debugLog(`Adding danmu: ${JSON.stringify(data)}`);
+            const container = document.getElementById('danmu-container');
+            const item = document.createElement('div');
+            item.className = 'danmu-item';
+            
+            const username = document.createElement('span');
+            username.className = 'username';
+            username.textContent = data.username;
+            
+            const message = document.createElement('span');
+            message.className = 'message';
+            message.textContent = data.message;
+            
+            item.appendChild(username);
+            item.appendChild(message);
+            
+            if (container.firstChild) {
+                container.insertBefore(item, container.firstChild);
+            } else {
+                container.appendChild(item);
+            }
+            
+            if (container.children.length > maxLines) {
+                const oldestItem = container.lastChild;
+                oldestItem.classList.add('removing');
+                setTimeout(() => {
+                    if (oldestItem.parentNode === container) {
+                        container.removeChild(oldestItem);
+                    }
+                }, 300);
+            }
+        }
+
+        function updateStyle(style) {
+            debugLog(`Updating style: ${JSON.stringify(style)}`);
+            const container = document.getElementById('danmu-container');
+            const items = document.getElementsByClassName('danmu-item');
+            
+            if (style.containerWidth) {
+                container.style.width = `${style.containerWidth}px`;
+            }
+            
+            if (style.lines) {
+                maxLines = style.lines;
+            }
+            
+            if (style.fontSize) {
+                for (let item of items) {
+                    item.style.fontSize = `${style.fontSize}px`;
+                }
+            }
+            
+            if (style.textColor) {
+                for (let item of items) {
+                    const message = item.querySelector('.message');
+                    if (message) {
+                        message.style.color = style.textColor;
+                    }
+                }
+            }
+        }
+        
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                debugLog('Closing existing connection before reconnecting...');
+                ws.close();
+            }
+            
+            updateConnectionStatus('正在连接...');
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUri = protocol + '//' + window.location.host + '/ws';
+            debugLog(`Attempting to connect to ${wsUri}`);
+
+            try {
+                ws = new WebSocket(wsUri);
+                
+                ws.onopen = () => {
+                    debugLog('WebSocket connection established');
+                    updateConnectionStatus('已连接');
+                    reconnectAttempts = 0;
+                };
+                
+                ws.onclose = (event) => {
+                    debugLog(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+                    updateConnectionStatus('连接断开', true);
+                    
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        const delay = reconnectInterval / 1000;
+                        updateConnectionStatus(`${delay}秒后重新连接...`, true);
+                        debugLog(`Scheduling reconnect attempt ${reconnectAttempts + 1} in ${delay} seconds...`);
+                        setTimeout(connectWebSocket, reconnectInterval);
+                        reconnectAttempts++;
+                    } else {
+                        updateConnectionStatus('重连次数超限，请刷新页面', true);
+                        debugLog('Maximum reconnection attempts reached');
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    debugLog(`WebSocket error occurred: ${error}`);
+                    console.error('WebSocket error:', error);
+                    updateConnectionStatus('连接错误', true);
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        debugLog(`Received message: ${event.data.substring(0, 100)}...`);
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'danmu') {
+                            addDanmu(data.payload);
+                        } else if (data.type === 'style') {
+                            updateStyle(data.payload);
+                        } else if (data.type === 'clear') {
+                            clearDanmu();
+                        }
+                    } catch (error) {
+                        console.error('Message processing error:', error);
+                        debugLog(`Failed to process message: ${error}`);
+                        updateConnectionStatus('消息处理错误', true);
+                    }
+                };
+            } catch (error) {
+                debugLog(`Failed to create WebSocket connection: ${error}`);
+                console.error('WebSocket creation error:', error);
+                updateConnectionStatus('创建连接失败', true);
+            }
+        }
+
+        window.addEventListener('load', () => {
+            debugLog('Page loaded, initiating WebSocket connection...');
+            connectWebSocket();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            debugLog('Page unloading, closing WebSocket connection...');
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+        });
+
+        // 页面可见性变化时的处理
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') {
+                // 页面变为可见时，如果WebSocket已断开则重新连接
+                if (!ws || ws.readyState === WebSocket.CLOSED) {
+                    connectWebSocket();
+                }
+            }
+        });
+    </script>
+</body>
+</html>

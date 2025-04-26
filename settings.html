@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>微博评论收集器 - 设置</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .nav-links {
+            margin-bottom: 20px;
+        }
+        .nav-links a {
+            color: #1da1f2;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+        .setting-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .setting-group h2 {
+            margin-top: 0;
+            font-size: 18px;
+            color: #333;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #666;
+        }
+        input[type="number"], 
+        input[type="text"] {
+            width: 200px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        button {
+            padding: 8px 20px;
+            font-size: 16px;
+            background-color: #1da1f2;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0d8ed9;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        .status.success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .status.error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-links">
+            <a href="/collector.html">返回收集器</a>
+        </div>
+        
+        <h1>系统设置</h1>
+        
+        <div class="setting-group">
+            <h2>任务设置</h2>
+            <label for="taskDuration">任务持续时间（小时）</label>
+            <input type="number" id="taskDuration" value="8" min="1" max="24">
+            
+            <label for="maxTasks">最大并发任务数</label>
+            <input type="number" id="maxTasks" value="5" min="1" max="10">
+        </div>
+        
+        <div class="setting-group">
+            <h2>数据存储设置</h2>
+            <label for="savePath">数据保存路径</label>
+            <input type="text" id="savePath" value="./data">
+        </div>
+        
+        <button onclick="saveSettings()">保存设置</button>
+        <div id="status" class="status"></div>
+    </div>
+
+    <script>
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+            status.style.display = 'block';
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 3000);
+        }
+
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const settings = await response.json();
+                
+                document.getElementById('taskDuration').value = settings.task_duration;
+                document.getElementById('maxTasks').value = settings.max_tasks;
+                document.getElementById('savePath').value = settings.save_path;
+            } catch (error) {
+                showStatus('加载设置失败: ' + error.message, 'error');
+            }
+        }
+
+        async function saveSettings() {
+            const settings = {
+                task_duration: parseInt(document.getElementById('taskDuration').value),
+                max_tasks: parseInt(document.getElementById('maxTasks').value),
+                save_path: document.getElementById('savePath').value
+            };
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(settings)
+                });
+                
+                const result = await response.json();
+                if (result.status === 'success') {
+                    showStatus('设置已保存', 'success');
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (error) {
+                showStatus('保存设置失败: ' + error.message, 'error');
+            }
+        }
+
+        // 页面加载时获取当前设置
+        window.addEventListener('load', loadSettings);
+    </script>
+</body>
+</html> 

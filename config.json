@@ -1,25 +1,27 @@
 {
-    "user_id_list": "user_id_list.txt",
-    "only_crawl_original": 0,
+    "user_id_list": "user_id.txt",
+    "only_crawl_original": 1,
     "since_date": 1,
     "start_page": 1,
-    "page_weibo_count": 10,
+    "page_weibo_count": 5,
+    "max_weibo_count": 5,
+    "target_bid": "",
     "write_mode": [
-        "csv"
+        "sqlite"
     ],
-    "original_pic_download": 1,
+    "original_pic_download": 0,
     "retweet_pic_download": 0,
-    "original_video_download": 1,
+    "original_video_download": 0,
     "retweet_video_download": 0,
-    "original_live_photo_download": 1,
+    "original_live_photo_download": 0,
     "retweet_live_photo_download": 0,
     "download_comment": 1,
-    "comment_max_download_count": 100,
-    "download_repost": 1,
+    "comment_max_download_count": 500,
+    "download_repost": 0,
     "repost_max_download_count": 100,
     "user_id_as_folder_name": 0,
     "remove_html_tag": 1,
-    "cookie": "your cookie",
+    "cookie": "SINAGLOBAL=3242507172394.196.1744104590167; SCF=AngL5u2Oof8mF9JQ82KXVMsftMrVU4VmO9CW_f4kN9PN84SmMP8Fgjo-OFxtP7DLRVck7T-XXaTIuLvgsnGHnvw.; ULV=1745318378922:2:2:1:8672925674024.902.1745318378921:1744104590509; ALF=1747914132; SUB=_2A25FA_DEDeRhGeVM61UQ9yzPzDmIHXVmYQwMrDV8PUJbkNANLUXRkW1NTOzV8pMf0AVQmEuz682g9zT53rOEU5Bt; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WFVgQGw-iKcAYzfwwSm0TLz5JpX5KzhUgL.FoeEehMpS0z0S0-2dJLoIpeLxKqLBo2L1-qLxKBLB.eLB-9N; XSRF-TOKEN=fEAXQyT0BXBc7Q9s_u14tgYo; PC_TOKEN=d956281e23; WBPSESS=ak50Wk1QeB4VT2vfg_ESY0o8h0Fgp5l4iQVba5vs5NASBPgQdNzrvOZ7CiHunPfGfPLirSvnjdK5uCZXlOzdfi1k-0eMe0oO3gGrd85z8iOXOLfuVhpfJEOJK0oYFvEt31exk5UheDcIX77cdLMvnQ==",
     "mysql_config": {
         "host": "localhost",
         "port": 3306,
@@ -27,7 +29,7 @@
         "password": "123456",
         "charset": "utf8mb4"
     },
-    "store_binary_in_sqlite": 0,
+    "store_binary_in_sqlite": 1,
     "mongodb_URI": "mongodb://[username:password@]host[:port][/[defaultauthdb][?options]]",
     "post_config": {
         "api_url": "https://api.example.com",

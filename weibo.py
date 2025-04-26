@@ -103,6 +103,10 @@ class Weibo(object):
         self.mongodb_URI = config.get("mongodb_URI")  # MongoDB数据库连接字符串，可以不填
         self.post_config = config.get("post_config")  # post_config，可以不填
         self.page_weibo_count = config.get("page_weibo_count")  # page_weibo_count，爬取一页的微博数，默认10页
+        # 新增参数：最大微博获取数量，默认为5
+        self.max_weibo_count = config.get("max_weibo_count", 5)
+        # 新增参数：目标bid，如果设置了此参数，则只处理这个bid的微博
+        self.target_bid = config.get("target_bid", "")
         user_id_list = config["user_id_list"]
         self.session = requests.Session()
         adapter = HTTPAdapter(max_retries=5)
@@ -1292,10 +1296,6 @@ class Weibo(object):
         """获取一页的全部微博"""
         try:
             js = self.get_weibo_json(page)
-            import json
-            with open('js.json','w') as f:
-                #写入方式1，等价于下面这行
-                json.dump(js,f) #把列表numbers内容写入到"list.json"文件中
             if js["ok"]:
                 weibos = js["data"]["cards"]
                 
@@ -1312,6 +1312,10 @@ class Weibo(object):
                     if w["card_type"] == 9:
                         wb = self.get_one_weibo(w)
                         if wb:
+                            # 如果设置了target_bid，只处理匹配的微博
+                            if self.target_bid and wb["bid"] != self.target_bid:
+                                continue
+                                
                             if (
                                 const.CHECK_COOKIE["CHECK"]
                                 and (not const.CHECK_COOKIE["CHECKED"])
@@ -1329,84 +1333,32 @@ class Weibo(object):
                             since_date = datetime.strptime(
                                 self.user_config["since_date"], DTFORMAT
                             )
-                            if const.MODE == "append":
-                                # append模式下不会对置顶微博做任何处理
-
-                                # 由于微博本身的调整，下面判断是否为置顶的代码已失效，默认所有用户第一条均为置顶
-                                # if self.is_pinned_weibo(w):
-                                #     continue
-                                if const.CHECK_COOKIE["GUESS_PIN"]:
-                                    const.CHECK_COOKIE["GUESS_PIN"] = False
-                                    continue
-
-                                if self.first_crawler:
-                                    # 置顶微博的具体时间不好判定，将非置顶微博当成最新微博，写入上次抓取id的csv
-                                    self.latest_weibo_id = str(wb["id"])
-                                    csvutil.update_last_weibo_id(
-                                        wb["user_id"],
-                                        str(wb["id"]) + " " + wb["created_at"],
-                                        self.user_csv_file_path,
-                                    )
-                                    self.first_crawler = False
-                                if str(wb["id"]) == self.last_weibo_id:
-                                    if const.CHECK_COOKIE["CHECK"] and (
-                                        not const.CHECK_COOKIE["CHECKED"]
-                                    ):
-                                        # 已经爬取过最新的了，只是没检查到cookie，一旦检查通过，直接放行
-                                        const.CHECK_COOKIE["EXIT_AFTER_CHECK"] = True
-                                        continue
-                                    if self.last_weibo_id == self.latest_weibo_id:
-                                        logger.info(
-                                            "{} 用户没有发新微博".format(
-                                                self.user["screen_name"]
-                                            )
-                                        )
-                                    else:
-                                        logger.info(
-                                            "增量获取微博完毕，将最新微博id从 {} 变更为 {}".format(
-                                                self.last_weibo_id, self.latest_weibo_id
-                                            )
-                                        )
-                                    return True
-                                # 上一次标记的微博被删了，就把上一条微博时间记录推前两天，多抓点评论或者微博内容修改
-                                # TODO 更加合理的流程是，即使读取到上次更新微博id，也抓取增量评论，由此获得更多的评论
-                                since_date = datetime.strptime(
-                                    convert_to_days_ago(self.last_weibo_date, 1),
-                                    DTFORMAT,
-                                )
                             if created_at < since_date:
                                 if self.is_pinned_weibo(w):
                                     continue
-                                # 如果要检查还没有检查cookie，不能直接跳出
                                 elif const.CHECK_COOKIE["CHECK"] and (
                                     not const.CHECK_COOKIE["CHECKED"]
                                 ):
                                     continue
                                 else:
-                                    logger.info(
-                                        "{}已获取{}({})的第{}页{}微博{}".format(
-                                            "-" * 30,
-                                            self.user["screen_name"],
-                                            self.user["id"],
-                                            page,
-                                            '包含"' + self.query + '"的'
-                                            if self.query
-                                            else "",
-                                            "-" * 30,
-                                        )
-                                    )
+                                    # 如果设置了target_bid且还没找到目标微博，继续搜索
+                                    if self.target_bid and not any(w["bid"] == self.target_bid for w in self.weibo):
+                                        continue
                                     return True
                             if (not self.only_crawl_original) or ("retweet" not in wb.keys()):
+                                if self.got_count >= self.max_weibo_count and not self.target_bid:
+                                    return True
                                 self.weibo.append(wb)
                                 self.weibo_id_list.append(wb["id"])
                                 self.got_count += 1
-                                # 这里是系统日志输出，尽量别太杂
                                 logger.info(
                                     "已获取用户 {} 的微博，内容为 {}".format(
                                         self.user["screen_name"], wb["text"]
                                     )
                                 )
-                                # self.print_weibo(wb)
+                                # 如果找到了目标bid的微博，可以直接返回了
+                                if self.target_bid and wb["bid"] == self.target_bid:
+                                    return True
                             else:
                                 logger.info("正在过滤转发微博")
                     
@@ -1422,6 +1374,10 @@ class Weibo(object):
                     "-" * 30, self.user["screen_name"], self.user["id"], page, "-" * 30
                 )
             )
+            # 如果设置了target_bid且还没找到目标微博，返回False继续搜索
+            if self.target_bid and not any(w["bid"] == self.target_bid for w in self.weibo):
+                return False
+            return True
         except Exception as e:
             logger.exception(e)
 
@@ -1445,7 +1401,7 @@ class Weibo(object):
                 "获取正确的user_id；\n"
                 "或者参考\n"
                 "https://github.com/dataabc/weibo-crawler#3程序设置\n"
-                "中的“设置cookie”部分设置cookie信息"
+                "中的设置cookie部分设置cookie信息"
             )
 
     def get_write_info(self, wrote_count):
@@ -2162,30 +2118,21 @@ class Weibo(object):
             since_date = datetime.strptime(self.user_config["since_date"], DTFORMAT)
             today = datetime.today()
             if since_date <= today:    # since_date 若为未来则无需执行
-                page_count = self.get_page_count()
                 wrote_count = 0
                 page1 = 0
-                random_pages = random.randint(1, 5)
                 self.start_date = datetime.now().strftime(DTFORMAT)
-                pages = range(self.start_page, page_count + 1)
-                for page in tqdm(pages, desc="Progress"):
-                    is_end = self.get_one_page(page)
-                    if is_end:
-                        break
+                
+                # 只获取第一页
+                is_end = self.get_one_page(1)
+                if not is_end and self.got_count < self.max_weibo_count:
+                    # 如果第一页获取的微博数量不够，继续获取下一页，直到达到限制
+                    page = 2
+                    while not is_end and self.got_count < self.max_weibo_count:
+                        is_end = self.get_one_page(page)
+                        page += 1
+                        sleep(random.randint(1, 3))  # 添加短暂延迟
 
-                    if page % 20 == 0:  # 每爬20页写入一次文件
-                        self.write_data(wrote_count)
-                        wrote_count = self.got_count
-
-                    # 通过加入随机等待避免被限制。爬虫速度过快容易被系统限制(一段时间后限
-                    # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
-                    # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
-                    if (page - page1) % random_pages == 0 and page < page_count:
-                        sleep(random.randint(6, 10))
-                        page1 = page
-                        random_pages = random.randint(1, 5)
-
-                self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
+                self.write_data(wrote_count)  # 将获取到的微博写入文件
             logger.info("微博爬取完成，共爬取%d条微博", self.got_count)
         except Exception as e:
             logger.exception(e)
