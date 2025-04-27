@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>启动微博弹幕爬虫</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        .container {
+            background: #fff;
+            padding: 32px 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            min-width: 320px;
+        }
+        h2 {
+            margin-bottom: 24px;
+            color: #333;
+        }
+        input[type="text"] {
+            width: 220px;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+            margin-right: 12px;
+        }
+        button {
+            padding: 8px 24px;
+            font-size: 16px;
+            background: #1da1f2;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0d8ed9;
+        }
+        #result {
+            margin-top: 20px;
+            color: #1da1f2;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>输入微博BID启动弹幕爬虫</h2>
+        <form id="startForm">
+            <input type="text" id="bid" placeholder="请输入微博BID" required>
+            <button type="submit">启动</button>
+        </form>
+        <div id="result"></div>
+    </div>
+    <script>
+        document.getElementById('startForm').onsubmit = async function(e) {
+            e.preventDefault();
+            const bid = document.getElementById('bid').value.trim();
+            if (!bid) return;
+            document.getElementById('result').innerText = '正在启动...';
+            try {
+                const res = await fetch('/api/start_crawler', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({bid})
+                });
+                const data = await res.json();
+                document.getElementById('result').innerText = data.msg;
+            } catch (err) {
+                document.getElementById('result').innerText = '请求失败，请重试';
+            }
+        }
+    </script>
+</body>
+</html> 

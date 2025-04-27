@@ -4,4 +4,6 @@ lxml==5.1.0
 colorama==0.4.6
 aiohttp==3.9.3
 pyinstaller>=6.3.0
-python-dateutil>=2.8.2 
+python-dateutil>=2.8.2
+pyautogui==0.9.54
+keyboard==0.13.5 

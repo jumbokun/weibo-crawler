@@ -10,6 +10,8 @@ from pathlib import Path
 from aiohttp import web
 import aiohttp
 import os
+import subprocess
+import signal
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,7 +49,17 @@ async def get_latest_comments():
     try:
         conn = sqlite3.connect('./weibo/weibodata.db')
         cursor = conn.cursor()
-        
+        # 检查comments表是否存在，不存在则创建
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS comments (
+                id varchar(20) NOT NULL,
+                weibo_id varchar(32) NOT NULL,
+                user_screen_name varchar(64) NOT NULL,
+                text varchar(1000),
+                created_at varchar(20),
+                PRIMARY KEY (id)
+            );
+        """)
         # 获取最新的n条评论，按照 id 降序排序确保获取最新的评论
         query = """
         SELECT id, user_screen_name, text, created_at
@@ -55,10 +67,8 @@ async def get_latest_comments():
         ORDER BY id DESC
         LIMIT ?
         """
-        
         cursor.execute(query, (DANMU_CONFIG['max_comments'],))
         comments = cursor.fetchall()
-        
         # 转换为列表
         result = []
         for comment in comments:
@@ -68,7 +78,6 @@ async def get_latest_comments():
                 'message': comment[2],
                 'created_at': comment[3]
             })
-            
         return result
     except Exception as e:
         logger.error(f"获取评论失败: {e}")
@@ -194,11 +203,41 @@ async def serve_danmu_html(request):
     """提供弹幕HTML页面"""
     return web.FileResponse('danmu.html')
 
+async def serve_start_crawler_html(request):
+    """提供启动爬虫的页面"""
+    return web.FileResponse('start_crawler.html')
+
+async def start_crawler(request):
+    """根据BID启动爬虫脚本，并在8小时后自动关闭"""
+    try:
+        data = await request.json()
+        bid = data.get('bid', '').strip()
+        if not bid:
+            return web.json_response({'msg': 'BID不能为空'}, status=400)
+        # 启动爬虫脚本（后台运行，不阻塞主进程）
+        proc = subprocess.Popen(['python', 'get_single_weibo_comments.py', bid])
+        logger.info(f"已启动爬虫进程，PID={proc.pid}，BID={bid}")
+        # 启动定时任务，8小时后终止该进程
+        async def kill_proc_later(pid, delay_sec):
+            await asyncio.sleep(delay_sec)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                logger.info(f"已自动终止爬虫进程 PID={pid}")
+            except Exception as e:
+                logger.error(f"自动终止爬虫进程失败: {e}")
+        asyncio.create_task(kill_proc_later(proc.pid, 8*3600))
+        return web.json_response({'msg': f'已启动爬虫，BID={bid}，8小时后自动关闭'})
+    except Exception as e:
+        logger.error(f"启动爬虫失败: {e}")
+        return web.json_response({'msg': f'启动失败: {e}'}, status=500)
+
 async def init_app():
     """初始化应用"""
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/danmu.html', serve_danmu_html)
+    app.router.add_get('/start_crawler.html', serve_start_crawler_html)
+    app.router.add_post('/api/start_crawler', start_crawler)
     
     # 启动评论广播任务
     asyncio.create_task(broadcast_comments())
