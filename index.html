@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微博弹幕系统</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #000;
+        }
+        .container {
+            max-width: 800px;
+            margin: 40px auto 0 auto;
+        }
+        .input-section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #1890ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #40a9ff;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #f6ffed;
+            border: 1px solid #b7eb8f;
+            color: #52c41a;
+        }
+        .status.error {
+            background-color: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #ff4d4f;
+        }
+        #danmuContainer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            z-index: 10;
+            background: transparent;
+        }
+        .danmu {
+            position: absolute;
+            white-space: nowrap;
+            color: #fff;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+            font-size: 24px;
+            animation: danmuMove 8s linear;
+        }
+        @keyframes danmuMove {
+            from {
+                transform: translateX(100vw);
+            }
+            to {
+                transform: translateX(-100vw);
+            }
+        }
+        .hide {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" id="inputContainer">
+        <div class="input-section">
+            <h2>微博弹幕系统</h2>
+            <div class="input-group">
+                <input type="text" id="idInput" placeholder="请输入微博ID或BID">
+                <button id="startBtn" onclick="startCrawler()">开始爬取</button>
+            </div>
+            <div id="status" class="status" style="display: none;"></div>
+        </div>
+    </div>
+    <div id="danmuContainer" class="hide"></div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+        let danmuMode = false;
+
+        function connectWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                console.log('WebSocket连接已建立');
+                isConnected = true;
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket连接已关闭');
+                isConnected = false;
+                // 尝试重新连接
+                if (danmuMode) setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'danmu') {
+                    showDanmu(data.payload);
+                }
+            };
+        }
+
+        function showDanmu(data) {
+            const container = document.getElementById('danmuContainer');
+            const danmu = document.createElement('div');
+            danmu.className = 'danmu';
+            danmu.textContent = `${data.username}: ${data.message}`;
+            
+            // 随机垂直位置
+            const top = Math.random() * (container.clientHeight - 40);
+            danmu.style.top = `${top}px`;
+            
+            container.appendChild(danmu);
+            
+            // 动画结束后移除弹幕
+            danmu.addEventListener('animationend', () => {
+                container.removeChild(danmu);
+            });
+        }
+
+        async function startCrawler() {
+            const idInput = document.getElementById('idInput');
+            const startBtn = document.getElementById('startBtn');
+            const status = document.getElementById('status');
+            
+            const id = idInput.value.trim();
+            if (!id) {
+                showStatus('请输入ID', 'error');
+                return;
+            }
+            
+            startBtn.disabled = true;
+            showStatus('正在启动爬虫...', 'success');
+            
+            try {
+                const response = await fetch('/api/start_crawler', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ id })
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    showStatus(data.msg, 'success');
+                    // 5秒后跳转到danmu.html
+                    setTimeout(() => {
+                        window.location.href = '/danmu.html';
+                    }, 5000);
+                } else {
+                    showStatus(data.msg, 'error');
+                }
+            } catch (error) {
+                showStatus('启动失败: ' + error.message, 'error');
+            } finally {
+                startBtn.disabled = false;
+            }
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        function enterDanmuMode() {
+            danmuMode = true;
+            document.getElementById('inputContainer').classList.add('hide');
+            const danmuContainer = document.getElementById('danmuContainer');
+            danmuContainer.classList.remove('hide');
+            danmuContainer.style.background = 'transparent';
+            document.body.style.background = 'black';
+            connectWebSocket();
+        }
+
+        // 页面加载时连接WebSocket（仅在弹幕模式下自动重连）
+        // connectWebSocket();
+    </script>
+</body>
+</html> 

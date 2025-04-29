@@ -12,6 +12,8 @@ import aiohttp
 import os
 import subprocess
 import signal
+import re
+import requests
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,6 +35,67 @@ LAST_PUSHED_COMMENTS = set()
 
 # 在全局变量部分添加
 HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
+
+# 记录所有爬虫进程
+CRAWLER_PROCS = []
+# 记录正在监控的微博ID或BID及其进程
+MONITORING_IDS = {}
+
+def get_weibo_id_by_bid(bid, cookie):
+    """通过BID获取微博ID"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36",
+        "Cookie": cookie
+    }
+    
+    try:
+        # 使用新的API直接获取微博信息
+        url = f"https://weibo.com/ajax/statuses/show?id={bid}"
+        logger.info(f"正在请求URL: {url}")
+        logger.info(f"Headers: {headers}")
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # 先看看原始响应
+        raw_text = response.text
+        logger.info(f"API响应内容: {raw_text[:200]}...")  # 只打印前200个字符避免日志过长
+        
+        # 检查响应状态码
+        logger.info(f"响应状态码: {response.status_code}")
+        logger.info(f"响应头: {dict(response.headers)}")
+        
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON解析失败，响应内容: {raw_text}")
+            raise
+        
+        if 'id' in data:
+            logger.info(f"成功将BID {bid} 转换为微博ID {data['id']}")
+            return str(data['id'])
+        elif 'ok' in data and data.get('ok') == 1 and 'idstr' in data:
+            # 处理特殊情况：某些API返回格式不同
+            logger.info(f"成功将BID {bid} 转换为微博ID {data['idstr']}")
+            return str(data['idstr'])
+        else:
+            logger.error(f"未能从API响应中获取到微博ID: {data}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"转换微博ID失败: {str(e)}")
+        logger.error(f"错误类型: {type(e)}")
+        if isinstance(e, requests.exceptions.RequestException):
+            logger.error(f"请求异常详情: {str(e)}")
+        return None
+
+def is_weibo_id(id_str):
+    """判断是否为微博ID（数字）"""
+    return id_str.isdigit()
+
+def is_bid(id_str):
+    """判断是否为BID（字母数字组合）"""
+    return bool(re.match(r'^[A-Za-z0-9]+$', id_str))
 
 def load_config():
     """加载弹幕配置"""
@@ -199,24 +262,55 @@ async def send_heartbeat(ws):
     except asyncio.CancelledError:
         pass
 
+async def serve_index_html(request):
+    """提供主页面"""
+    return web.FileResponse('index.html')
+
 async def serve_danmu_html(request):
-    """提供弹幕HTML页面"""
     return web.FileResponse('danmu.html')
 
-async def serve_start_crawler_html(request):
-    """提供启动爬虫的页面"""
-    return web.FileResponse('start_crawler.html')
-
 async def start_crawler(request):
-    """根据BID启动爬虫脚本，并在8小时后自动关闭"""
+    """根据输入的ID启动爬虫脚本，并在8小时后自动关闭"""
     try:
         data = await request.json()
-        bid = data.get('bid', '').strip()
-        if not bid:
-            return web.json_response({'msg': 'BID不能为空'}, status=400)
+        input_id = data.get('id', '').strip()
+        if not input_id:
+            return web.json_response({'msg': 'ID不能为空'}, status=400)
+            
+        # 读取cookie
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                cookie = config.get('cookie', '')
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            return web.json_response({'msg': '读取配置文件失败'}, status=500)
+            
+        # 判断ID类型并获取微博ID
+        if is_weibo_id(input_id):
+            weibo_id = input_id
+            id_type = '微博ID'
+            monitor_key = weibo_id
+        elif is_bid(input_id):
+            weibo_id = get_weibo_id_by_bid(input_id, cookie)
+            if not weibo_id:
+                return web.json_response({'msg': '无法获取微博ID，请检查BID是否正确'}, status=400)
+            id_type = 'BID'
+            monitor_key = input_id
+        else:
+            return web.json_response({'msg': '无效的ID格式'}, status=400)
+            
+        # 判断是否已在监控
+        proc = MONITORING_IDS.get(monitor_key)
+        if proc and proc.poll() is None:
+            return web.json_response({'msg': f'已经在监控该{id_type}，无需重复启动'} , status=200)
+
         # 启动爬虫脚本（后台运行，不阻塞主进程）
-        proc = subprocess.Popen(['python', 'get_single_weibo_comments.py', bid])
-        logger.info(f"已启动爬虫进程，PID={proc.pid}，BID={bid}")
+        proc = subprocess.Popen(['python', 'get_single_weibo_comments.py', weibo_id])
+        CRAWLER_PROCS.append(proc)
+        MONITORING_IDS[monitor_key] = proc
+        logger.info(f"已启动爬虫进程，PID={proc.pid}，{id_type}={input_id}，微博ID={weibo_id}")
+        
         # 启动定时任务，8小时后终止该进程
         async def kill_proc_later(pid, delay_sec):
             await asyncio.sleep(delay_sec)
@@ -225,8 +319,9 @@ async def start_crawler(request):
                 logger.info(f"已自动终止爬虫进程 PID={pid}")
             except Exception as e:
                 logger.error(f"自动终止爬虫进程失败: {e}")
+                
         asyncio.create_task(kill_proc_later(proc.pid, 8*3600))
-        return web.json_response({'msg': f'已启动爬虫，BID={bid}，8小时后自动关闭'})
+        return web.json_response({'msg': f'已启动爬虫，{id_type}={input_id}，微博ID={weibo_id}，8小时后自动关闭'})
     except Exception as e:
         logger.error(f"启动爬虫失败: {e}")
         return web.json_response({'msg': f'启动失败: {e}'}, status=500)
@@ -235,8 +330,8 @@ async def init_app():
     """初始化应用"""
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
+    app.router.add_get('/', serve_index_html)
     app.router.add_get('/danmu.html', serve_danmu_html)
-    app.router.add_get('/start_crawler.html', serve_start_crawler_html)
     app.router.add_post('/api/start_crawler', start_crawler)
     
     # 启动评论广播任务
@@ -244,11 +339,26 @@ async def init_app():
     
     return app
 
+# 处理server关闭时终止所有爬虫进程
+def handle_exit(signum, frame):
+    logger.info("收到退出信号，正在关闭所有爬虫进程...")
+    for proc in CRAWLER_PROCS:
+        if proc.poll() is None:  # 进程还在运行
+            try:
+                proc.terminate()
+                logger.info(f"已终止爬虫进程 PID={proc.pid}")
+            except Exception as e:
+                logger.error(f"终止爬虫进程失败: {e}")
+    logger.info("所有爬虫进程已处理，server即将退出。")
+    os._exit(0)
+
 def main():
     """主函数"""
     # 加载配置
     load_config()
-    
+    # 注册信号处理
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
     # 启动服务器
     app = init_app()
     web.run_app(app, host='localhost', port=8080)

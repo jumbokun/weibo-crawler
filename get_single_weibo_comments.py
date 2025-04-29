@@ -98,15 +98,30 @@ def get_weibo_id_by_bid(bid, cookie):
         return None
 
 class WeiboCommentCrawler:
-    def __init__(self, bid, cookie):
-        # 先转换BID为微博ID
-        self.bid = bid
-        weibo_id = get_weibo_id_by_bid(bid, cookie)
-        if not weibo_id:
-            raise ValueError(f"无法获取BID为 {bid} 的微博ID")
-            
-        self.weibo_id = weibo_id
+    def __init__(self, input_id, cookie):
+        """初始化爬虫
+        
+        Args:
+            input_id: 可以是BID或微博ID
+            cookie: 微博cookie
+        """
+        self.input_id = input_id
         self.cookie = cookie
+        
+        # 判断输入ID类型并获取微博ID
+        if input_id.isdigit():
+            # 如果输入的是微博ID
+            self.weibo_id = input_id
+            self.bid = None
+            logger.info(f"使用微博ID: {input_id}")
+        else:
+            # 如果输入的是BID
+            self.bid = input_id
+            self.weibo_id = get_weibo_id_by_bid(input_id, cookie)
+            if not self.weibo_id:
+                raise ValueError(f"无法获取BID为 {input_id} 的微博ID")
+            logger.info(f"BID {input_id} 转换为微博ID: {self.weibo_id}")
+            
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36",
             "Cookie": cookie
@@ -117,7 +132,7 @@ class WeiboCommentCrawler:
         self.session.mount('https://', adapter)
         self.known_comment_ids = set()  # 用于跟踪已知评论
         
-        logger.info(f"初始化爬虫: BID={bid}, 微博ID={weibo_id}")
+        logger.info(f"初始化爬虫完成: 输入ID={input_id}, 微博ID={self.weibo_id}")
 
     def get_comments(self, batch_size=10):
         """获取指定微博的评论
@@ -406,12 +421,16 @@ def main():
         print_success_message()
         
         try:
+            round_count = 0
             while running:
                 new_comments = crawler.get_comments(batch_size)
                 if new_comments:
                     print(f"{Fore.GREEN}获取到 {len(new_comments)} 条新评论{Style.RESET_ALL}")
                     crawler.save_to_sqlite(new_comments)
-                
+                else:
+                    round_count += 1
+                    if round_count % 10 == 0:
+                        print(f"{Fore.YELLOW}连续10轮没有新评论{Style.RESET_ALL}")
                 sleep(3)
         except KeyboardInterrupt:
             print(f"\n{Fore.YELLOW}程序已停止{Style.RESET_ALL}")
