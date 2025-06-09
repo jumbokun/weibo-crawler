@@ -34,7 +34,7 @@ class CommentCollector:
         }
         self.comments.append(comment)
         self.save_comment(comment)
-        print(f"[已保存评论] {display_name}({username}): {content}")
+        print(f"[已保存评论] {display_name}: {content}")
 
     def save_comment(self, comment):
         try:
@@ -81,8 +81,16 @@ async def monitor_websocket():
     collector = CommentCollector()
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, devtools=True)
-        page = await browser.new_page()
+        # 启动无头浏览器
+        browser = await p.chromium.launch(
+            headless=True,  # 无头模式
+            args=['--no-sandbox']  # 添加必要的启动参数
+        )
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},  # 设置视口大小
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'  # 设置用户代理
+        )
+        page = await context.new_page()
 
         async def on_websocket(ws):
             if "chatnow" in ws.url:
@@ -105,7 +113,7 @@ async def monitor_websocket():
                                     timestamp = datetime.fromtimestamp(body.get("timestamp", 0)/1000).strftime('%Y-%m-%d %H:%M:%S')
                                     
                                     if text and display_name and username:
-                                        print(f"\n[收到评论] [{timestamp}] {display_name}(@{username}): {text}")
+                                        print(f"\n[收到评论] [{timestamp}] {display_name}: {text}")
                                         collector.add_comment(timestamp, username, display_name, text)
                             except Exception as e:
                                 print(f"[ERROR] 解析评论失败: {str(e)}")
@@ -118,17 +126,18 @@ async def monitor_websocket():
         page.on("websocket", on_websocket)
 
         try:
-            await page.goto(SPACE_URL)
+            # 设置更长的超时时间
+            await page.goto(SPACE_URL, wait_until="networkidle", timeout=60000)
             print("[*] 页面加载完成")
-            await page.wait_for_load_state("networkidle")
             
             try:
+                # 等待并点击"继续浏览"按钮
                 continue_button = page.get_by_text("继续浏览")
-                if await continue_button.is_visible():
+                if await continue_button.is_visible(timeout=5000):
                     print("[*] 点击'继续浏览'按钮...")
                     await continue_button.click()
-            except:
-                pass
+            except Exception as e:
+                print("[*] 未找到'继续浏览'按钮，继续执行...")
 
             print("[*] 开始监听WebSocket消息...")
             print("[*] 按Ctrl+C停止程序...")

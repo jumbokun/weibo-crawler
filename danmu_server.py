@@ -269,14 +269,29 @@ async def serve_index_html(request):
 async def serve_danmu_html(request):
     return web.FileResponse('danmu.html')
 
+def extract_id_from_input(input_str):
+    """从输入中提取ID，支持完整链接、BID和微博ID"""
+    # 如果包含/，取最后一个部分
+    if '/' in input_str:
+        input_str = input_str.split('/')[-1]
+    
+    # 去除可能的查询参数
+    if '?' in input_str:
+        input_str = input_str.split('?')[0]
+        
+    return input_str.strip()
+
 async def start_crawler(request):
     """根据输入的ID启动爬虫脚本，并在8小时后自动关闭"""
     try:
         data = await request.json()
-        input_id = data.get('id', '').strip()
-        if not input_id:
+        raw_input = data.get('id', '').strip()
+        if not raw_input:
             return web.json_response({'msg': 'ID不能为空'}, status=400)
             
+        # 从输入中提取ID
+        input_id = extract_id_from_input(raw_input)
+        
         # 读取cookie
         try:
             with open('config.json', 'r', encoding='utf-8') as f:
