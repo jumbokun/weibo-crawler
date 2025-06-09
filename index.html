@@ -175,23 +175,23 @@
             showStatus('正在启动爬虫...', 'success');
             
             try {
-                const response = await fetch('/api/start_crawler', {
+                const response = await fetch('/start_crawler', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ id })
+                    body: JSON.stringify({ input: id })
                 });
                 
                 const data = await response.json();
-                if (response.ok) {
-                    showStatus(data.msg, 'success');
+                if (data.success) {
+                    showStatus(data.message, 'success');
                     // 5秒后跳转到danmu.html
                     setTimeout(() => {
                         window.location.href = '/danmu.html';
                     }, 5000);
                 } else {
-                    showStatus(data.msg, 'error');
+                    showStatus('启动失败: ' + (data.message || '未知错误'), 'error');
                 }
             } catch (error) {
                 showStatus('启动失败: ' + error.message, 'error');

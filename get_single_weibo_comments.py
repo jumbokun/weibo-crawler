@@ -113,14 +113,14 @@ class WeiboCommentCrawler:
             # 如果输入的是微博ID
             self.weibo_id = input_id
             self.bid = None
-            logger.info(f"使用微博ID: {input_id}")
+            logger.info(f"初始化爬虫完成: 输入ID={input_id}, 微博ID={self.weibo_id}")
         else:
             # 如果输入的是BID
             self.bid = input_id
             self.weibo_id = get_weibo_id_by_bid(input_id, cookie)
             if not self.weibo_id:
                 raise ValueError(f"无法获取BID为 {input_id} 的微博ID")
-            logger.info(f"BID {input_id} 转换为微博ID: {self.weibo_id}")
+            logger.info(f"初始化爬虫完成: 输入ID={input_id}, 微博ID={self.weibo_id}, BID={self.bid}")
             
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36",
@@ -131,8 +131,6 @@ class WeiboCommentCrawler:
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
         self.known_comment_ids = set()  # 用于跟踪已知评论
-        
-        logger.info(f"初始化爬虫完成: 输入ID={input_id}, 微博ID={self.weibo_id}")
 
     def get_comments(self, batch_size=10):
         """获取指定微博的评论

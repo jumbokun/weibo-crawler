@@ -67,13 +67,17 @@
             if (!bid) return;
             document.getElementById('result').innerText = '正在启动...';
             try {
-                const res = await fetch('/api/start_crawler', {
+                const res = await fetch('/start_crawler', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({bid})
+                    body: JSON.stringify({input: bid})
                 });
                 const data = await res.json();
-                document.getElementById('result').innerText = data.msg;
+                if (data.success) {
+                    document.getElementById('result').innerText = data.message;
+                } else {
+                    document.getElementById('result').innerText = '启动失败: ' + (data.message || '未知错误');
+                }
             } catch (err) {
                 document.getElementById('result').innerText = '请求失败，请重试';
             }

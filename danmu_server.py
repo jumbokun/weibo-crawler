@@ -14,6 +14,7 @@ import subprocess
 import signal
 import re
 import requests
+import time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,6 +41,12 @@ HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
 CRAWLER_PROCS = []
 # 记录正在监控的微博ID或BID及其进程
 MONITORING_IDS = {}
+
+# 在全局变量部分添加
+CRAWLER_TASKS = {}  # 存储爬虫任务的字典
+
+# 新增：管理当前活跃的评论爬虫进程
+ACTIVE_COMMENT_PROCS = {}
 
 def get_weibo_id_by_bid(bid, cookie):
     """通过BID获取微博ID"""
@@ -212,10 +219,10 @@ async def websocket_handler(request):
     """处理WebSocket连接"""
     ws = web.WebSocketResponse(heartbeat=HEARTBEAT_INTERVAL)
     await ws.prepare(request)
-    
     WEBSOCKET_CLIENTS.add(ws)
     logger.info(f"新的WebSocket连接，当前连接数: {len(WEBSOCKET_CLIENTS)}")
-    
+    # 只在新连接时刷新爬虫
+    await manage_crawlers_on_ws_change()
     # 发送初始样式配置
     await ws.send_json({
         'type': 'style',
@@ -226,14 +233,25 @@ async def websocket_handler(request):
             'lines': DANMU_CONFIG['max_comments']
         }
     })
-    
+    # 新增：新连接时主动推送最新几条评论
     try:
-        # 启动心跳任务
+        latest_comments = await get_latest_comments()
+        # 先清除现有评论
+        await ws.send_json({'type': 'clear', 'payload': {}})
+        for comment in latest_comments:
+            await ws.send_json({
+                'type': 'danmu',
+                'payload': {
+                    'username': comment['username'],
+                    'message': comment['message']
+                }
+            })
+    except Exception as e:
+        logger.error(f"主动推送评论失败: {e}")
+    try:
         heartbeat_task = asyncio.create_task(send_heartbeat(ws))
-        
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.PONG:
-                # 收到PONG响应，说明客户端还活着
                 logger.debug("收到客户端心跳响应")
                 continue
             elif msg.type == aiohttp.WSMsgType.ERROR:
@@ -241,9 +259,9 @@ async def websocket_handler(request):
                 break
     finally:
         WEBSOCKET_CLIENTS.remove(ws)
-        heartbeat_task.cancel()  # 取消心跳任务
+        heartbeat_task.cancel()
         logger.info(f"WebSocket连接关闭，当前连接数: {len(WEBSOCKET_CLIENTS)}")
-    
+        # 断开时不再刷新爬虫
     return ws
 
 async def send_heartbeat(ws):
@@ -267,7 +285,143 @@ async def serve_index_html(request):
     return web.FileResponse('index.html')
 
 async def serve_danmu_html(request):
-    return web.FileResponse('danmu.html')
+    return web.FileResponse('./danmu.html')
+
+async def reload_config():
+    """重新加载配置并重启相关任务"""
+    global DANMU_CONFIG
+    
+    try:
+        # 重新加载弹幕配置
+        load_config()
+        
+        # 重新加载主配置
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # 更新所有WebSocket客户端的样式
+        for ws in WEBSOCKET_CLIENTS.copy():
+            try:
+                await ws.send_json({
+                    'type': 'style',
+                    'payload': {
+                        'containerWidth': DANMU_CONFIG['container_width'],
+                        'fontSize': DANMU_CONFIG['font_size'],
+                        'textColor': DANMU_CONFIG['text_color'],
+                        'lines': DANMU_CONFIG['max_comments']
+                    }
+                })
+            except Exception as e:
+                logger.error(f"更新客户端样式失败: {e}")
+                WEBSOCKET_CLIENTS.remove(ws)
+        
+        # 重启所有正在运行的爬虫任务
+        for bid, task in CRAWLER_TASKS.items():
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                
+                # 重新启动爬虫
+                new_task = asyncio.create_task(start_crawler_for_bid(bid))
+                CRAWLER_TASKS[bid] = new_task
+                
+        logger.info("配置重载完成")
+        return True
+    except Exception as e:
+        logger.error(f"重载配置失败: {e}")
+        return False
+
+async def start_crawler_for_bid(bid):
+    """为指定的BID启动爬虫"""
+    try:
+        # 读取配置
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # 构建爬虫命令
+        cmd = ['python', 'weibo.py', '--bid', bid]
+        if config.get('only_crawl_original'):
+            cmd.append('--only-crawl-original')
+            
+        # 启动爬虫进程
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # 等待进程完成
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            logger.error(f"爬虫进程异常退出: {stderr.decode()}")
+            
+    except Exception as e:
+        logger.error(f"启动爬虫失败: {e}")
+
+async def update_cookie(request):
+    """处理Cookie更新请求"""
+    try:
+        data = await request.json()
+        cookie = data.get('cookie')
+        
+        if not cookie:
+            return web.json_response({
+                'success': False,
+                'message': 'Cookie不能为空'
+            }, status=400)
+            
+        # 读取现有配置
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            return web.json_response({
+                'success': False,
+                'message': '读取配置文件失败'
+            }, status=500)
+            
+        # 更新cookie
+        config['cookie'] = cookie
+        
+        # 保存更新后的配置
+        try:
+            with open('config.json', 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"保存配置文件失败: {e}")
+            return web.json_response({
+                'success': False,
+                'message': '保存配置文件失败'
+            }, status=500)
+            
+        # 重新加载配置
+        if await reload_config():
+            logger.info("Cookie更新并重载成功")
+            return web.json_response({
+                'success': True,
+                'message': 'Cookie更新成功，配置已重载'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'message': 'Cookie更新成功，但配置重载失败'
+            }, status=500)
+            
+    except Exception as e:
+        logger.error(f"更新Cookie失败: {e}")
+        return web.json_response({
+            'success': False,
+            'message': f'更新Cookie失败: {str(e)}'
+        }, status=500)
+
+async def serve_cookie_manager(request):
+    """提供Cookie管理页面"""
+    return web.FileResponse('./cookie_manager.html')
 
 def extract_id_from_input(input_str):
     """从输入中提取ID，支持完整链接、BID和微博ID"""
@@ -282,72 +436,64 @@ def extract_id_from_input(input_str):
     return input_str.strip()
 
 async def start_crawler(request):
-    """根据输入的ID启动爬虫脚本，并在8小时后自动关闭"""
+    """启动爬虫"""
     try:
         data = await request.json()
-        raw_input = data.get('id', '').strip()
-        if not raw_input:
-            return web.json_response({'msg': 'ID不能为空'}, status=400)
-            
-        # 从输入中提取ID
-        input_id = extract_id_from_input(raw_input)
+        input_str = data.get('input', '').strip()
         
-        # 读取cookie
-        try:
-            with open('config.json', 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                cookie = config.get('cookie', '')
-        except Exception as e:
-            logger.error(f"读取配置文件失败: {e}")
-            return web.json_response({'msg': '读取配置文件失败'}, status=500)
+        if not input_str:
+            return web.json_response({
+                'success': False,
+                'message': '请输入微博链接或ID'
+            }, status=400)
             
-        # 判断ID类型并获取微博ID
-        if is_weibo_id(input_id):
-            weibo_id = input_id
-            id_type = '微博ID'
-            monitor_key = weibo_id
-        elif is_bid(input_id):
-            weibo_id = get_weibo_id_by_bid(input_id, cookie)
-            if not weibo_id:
-                return web.json_response({'msg': '无法获取微博ID，请检查BID是否正确'}, status=400)
-            id_type = 'BID'
-            monitor_key = input_id
-        else:
-            return web.json_response({'msg': '无效的ID格式'}, status=400)
+        # 提取ID
+        bid = extract_id_from_input(input_str)
+        if not bid:
+            return web.json_response({
+                'success': False,
+                'message': '无法解析输入的微博链接或ID'
+            }, status=400)
             
-        # 判断是否已在监控
-        proc = MONITORING_IDS.get(monitor_key)
-        if proc and proc.poll() is None:
-            return web.json_response({'msg': f'已经在监控该{id_type}，无需重复启动'} , status=200)
-
-        # 启动爬虫脚本（后台运行，不阻塞主进程）
-        proc = subprocess.Popen(['python', 'get_single_weibo_comments.py', weibo_id])
-        CRAWLER_PROCS.append(proc)
-        MONITORING_IDS[monitor_key] = proc
-        logger.info(f"已启动爬虫进程，PID={proc.pid}，{id_type}={input_id}，微博ID={weibo_id}")
-        
-        # 启动定时任务，8小时后终止该进程
-        async def kill_proc_later(pid, delay_sec):
-            await asyncio.sleep(delay_sec)
+        # 如果已经有相同BID的任务在运行，先取消它
+        if bid in CRAWLER_TASKS and not CRAWLER_TASKS[bid].done():
+            CRAWLER_TASKS[bid].cancel()
             try:
-                os.kill(pid, signal.SIGTERM)
-                logger.info(f"已自动终止爬虫进程 PID={pid}")
-            except Exception as e:
-                logger.error(f"自动终止爬虫进程失败: {e}")
+                await CRAWLER_TASKS[bid]
+            except asyncio.CancelledError:
+                pass
                 
-        asyncio.create_task(kill_proc_later(proc.pid, 8*3600))
-        return web.json_response({'msg': f'已启动爬虫，{id_type}={input_id}，微博ID={weibo_id}，8小时后自动关闭'})
+        # 启动新的爬虫任务
+        task = asyncio.create_task(start_crawler_for_bid(bid))
+        CRAWLER_TASKS[bid] = task
+        
+        return web.json_response({
+            'success': True,
+            'message': f'已启动爬虫任务，监控BID: {bid}'
+        })
+        
     except Exception as e:
         logger.error(f"启动爬虫失败: {e}")
-        return web.json_response({'msg': f'启动失败: {e}'}, status=500)
+        return web.json_response({
+            'success': False,
+            'message': f'启动爬虫失败: {str(e)}'
+        }, status=500)
 
 async def init_app():
     """初始化应用"""
     app = web.Application()
-    app.router.add_get('/ws', websocket_handler)
+    
+    # 添加路由
     app.router.add_get('/', serve_index_html)
     app.router.add_get('/danmu.html', serve_danmu_html)
-    app.router.add_post('/api/start_crawler', start_crawler)
+    app.router.add_get('/danmu', serve_danmu_html)
+    app.router.add_get('/cookie', serve_cookie_manager)  # 新增Cookie管理页面路由
+    app.router.add_post('/update_cookie', update_cookie)  # 新增Cookie更新路由
+    app.router.add_get('/ws', websocket_handler)
+    app.router.add_post('/start_crawler', start_crawler)
+    
+    # 加载配置
+    load_config()
     
     # 启动评论广播任务
     asyncio.create_task(broadcast_comments())
@@ -369,14 +515,116 @@ def handle_exit(signum, frame):
 
 def main():
     """主函数"""
-    # 加载配置
-    load_config()
     # 注册信号处理
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
     # 启动服务器
     app = init_app()
     web.run_app(app, host='localhost', port=8080)
+
+# 新增：获取指定用户最新5条微博ID
+
+def get_latest_5_weibo_ids(user_id, cookie):
+    """通过微博API获取指定用户最新5条微博ID（修正版）"""
+    url = f'https://m.weibo.cn/api/container/getIndex?type=uid&value={user_id}&containerid=107603{user_id}'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36',
+        'Cookie': cookie
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        cards = data.get('data', {}).get('cards', [])
+        weibo_ids = []
+        for card in cards:
+            if card.get('card_type') == 9 and 'mblog' in card:
+                weibo_ids.append(str(card['mblog']['id']))
+                if len(weibo_ids) >= 5:
+                    break
+        return weibo_ids
+    except Exception as e:
+        logger.error(f"获取最新5条微博ID失败: {e}")
+        return []
+
+# 新增：启动评论爬虫进程
+
+def start_comment_crawlers(weibo_ids, cookie):
+    global ACTIVE_COMMENT_PROCS
+    stop_comment_crawlers()  # 先停掉所有旧的
+    ACTIVE_COMMENT_PROCS = {}
+    for wid in weibo_ids:
+        try:
+            proc = subprocess.Popen([
+                'python', 'get_single_weibo_comments.py', wid
+            ], env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+            ACTIVE_COMMENT_PROCS[wid] = proc
+            logger.info(f"已启动评论爬虫进程，微博ID={wid}，PID={proc.pid}")
+        except Exception as e:
+            logger.error(f"启动评论爬虫进程失败: {e}")
+
+# 新增：停止所有评论爬虫进程
+
+def stop_comment_crawlers():
+    global ACTIVE_COMMENT_PROCS
+    for wid, proc in ACTIVE_COMMENT_PROCS.items():
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                logger.info(f"已终止评论爬虫进程，微博ID={wid}，PID={proc.pid}")
+            except Exception as e:
+                logger.error(f"终止评论爬虫进程失败: {e}")
+    ACTIVE_COMMENT_PROCS = {}
+
+# 新增：WebSocket连接管理，自动启动/停止爬虫
+
+async def manage_crawlers_on_ws_change():
+    """根据WebSocket连接数自动管理爬虫"""
+    # 读取用户ID、cookie和n
+    try:
+        with open('config.json', encoding='utf-8') as f:
+            config = json.load(f)
+        user_id_file = config.get('user_id_list', 'user_id.txt')
+        cookie = config.get('cookie', '')
+        n = int(config.get('latest_weibo_count', 5))
+        with open(user_id_file, encoding='utf-8') as f:
+            user_id = f.read().strip().split()[0]
+    except Exception as e:
+        logger.error(f"读取用户ID、cookie或n失败: {e}")
+        return
+    if WEBSOCKET_CLIENTS:
+        # 有连接，获取最新n条微博ID并启动爬虫
+        weibo_ids = get_latest_n_weibo_ids(user_id, cookie, n)
+        if weibo_ids:
+            start_comment_crawlers(weibo_ids, cookie)
+        else:
+            logger.warning("未获取到最新微博ID，爬虫未启动")
+    else:
+        # 无连接，停止所有爬虫
+        stop_comment_crawlers()
+
+def get_latest_n_weibo_ids(user_id, cookie, n):
+    """通过微博API获取指定用户最新n条微博ID（n从配置读取）"""
+    url = f'https://m.weibo.cn/api/container/getIndex?type=uid&value={user_id}&containerid=107603{user_id}'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36',
+        'Cookie': cookie
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        cards = data.get('data', {}).get('cards', [])
+        weibo_ids = []
+        for card in cards:
+            if card.get('card_type') == 9 and 'mblog' in card:
+                weibo_ids.append(str(card['mblog']['id']))
+                if len(weibo_ids) >= n:
+                    break
+        return weibo_ids
+    except Exception as e:
+        logger.error(f"获取最新{n}条微博ID失败: {e}")
+        return []
 
 if __name__ == '__main__':
     main() 
